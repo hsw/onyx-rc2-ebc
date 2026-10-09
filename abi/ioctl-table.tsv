@@ -1,0 +1,7 @@
+cmd	name (ebc.h)	ebc.h definition	arg type	size	direction	kernel fills/reads (stock kernel, disasm)	verdict
+0x7000	GET_EBC_BUFFER	#define GET_EBC_BUFFER (0x7000) - plain constant, not _IO()	struct ebc_buf_info *	56	kernel->user	takes an idle buffer from the pool; writes offset(+0x00), height(+0x08), width(+0x0c), vir_height(+0x10), vir_width(+0x14), fb_width(+0x18), fb_height(+0x1c), color_panel(+0x20), rotate(+0x34); epd_mode/win_* left as stack garbage; first call stops the kernel boot animation and powers EBC on	CONFIRMED
+0x7001	SET_EBC_SEND_BUFFER	#define SET_EBC_SEND_BUFFER (0x7001)	struct ebc_buf_info *	56	user->kernel	reads offset, epd_mode, color_panel, win_x1/y1/x2/y2 (x*3 if color_panel==1); queues buffer to display list; epd_mode==8 (EPD_BLOCK) blocks until display finished	CONFIRMED name; called from the userspace post path once per frame
+0x7002	GET_EBC_DRIVER_SN	#define GET_EBC_DRIVER_SN (0x7002)	struct ebc_sn_info *	40	in/out	key in, encoded "RK29_EBC_DRIVER_VERSION_1.00" (29 B) out	CONFIRMED (kernel only)
+0x7003	GET_EBC_BUFFER_INFO	#define GET_EBC_BUFFER_INFO (0x7003)	struct ebc_buf_info *	56	kernel->user	same panel fields as 0x7000, no offset	CONFIRMED
+0x7004	(none - not in ebc.h of the public source; stock kernel only)	-	int *	4	kernel->user	put_user(3028 /*0xbd4*/); returns -1 if arg==NULL	CONFIRMED behaviour; suggested name EBC_GET_VERSION / GET_EBC_CHIP_VER [VERIFY name]
+0x7005..	-	-	-	-	-	not in jump table: ebc_io_ctl returns 0 (no-op)	CONFIRMED
