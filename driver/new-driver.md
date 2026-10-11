@@ -1,7 +1,8 @@
 # Towards a new RK3026 EBC driver
 
 Notes for whoever writes a new E-Ink driver for the RK3026 (mainline or out of tree): what Rockchip's later vendor driver offers,
-and how small the kernel part can be. The register facts are in [`registers.md`](registers.md); the stock driver's behaviour in
+how small the kernel part can be, and which precedents and public references to follow (§3: mainline `repaper`, E Ink's mode
+definitions, the Kindle Paperwhite 3 kernel, epdiy). The register facts are in [`registers.md`](registers.md); the stock driver's behaviour in
 [`README.md`](README.md). Confidence marks as in [`registers.md`](registers.md).
 
 The stock RC2 driver cannot simply be rebuilt: there is no source, it is written against kernel 3.0 interfaces (fbdev, wake
@@ -88,3 +89,82 @@ What a simple LUT-firmware format needs: a header (magic, version, panel ID and 
 temperature ranges, word size), then for each mode × range pair the frame count and the frames of 16 RK3026 LUT words. The
 waveform file itself is not redistributable without a grant from its owner; see
 [onyx-rc2-waveform](https://github.com/hsw/onyx-rc2-waveform#licensing-and-linux-firmware).
+
+## 3. Precedents and references for the first series
+
+### 3.1 `repaper`: e-paper in mainline DRM without new UAPI
+
+`drivers/gpu/drm/tiny/repaper.c` (in mainline since 2017; GPL-2.0+, Pervasive Displays and Noralf Trønnes; about 1150 lines in
+v7.2) drives Pervasive Displays' small black-and-white e-paper panels, which have their own controller on the panel and sit on
+SPI. Read in the v7.2 tree [CONFIRMED-src]:
+
+- **Plain DRM, no own UAPI:** a `drm_simple_display_pipe` with the single format `DRM_FORMAT_XRGB8888` and fbdev emulation, so
+  ordinary programs and the console work; no ioctls and no "update mode" property.
+- **Conversion in the kernel:** `drm_fb_xrgb8888_to_mono()` turns each frame into 1 bit per pixel; the driver keeps the
+  previous frame itself.
+- **Update policy inside the driver:** the first update clears the panel and draws the image in several stages, later updates
+  go from the previous frame to the new one. It always updates the whole screen (a comment says the panel "can't do partial
+  updates").
+- **Temperature from a thermal zone named in the DT** (`pervasive,thermal-zone`), used to stretch the stage times when cold.
+  This is what reviewers asked the 2022 `rockchip_ebc` RFC to do.
+- **No waveform:** the stage sequence is fixed in the code; the CPU pushes every frame over SPI.
+
+How a first RK3026 EBC series could follow it [STRONG as a proposal]:
+- a DRM driver with fbdev emulation and XRGB8888 (or `R8`) input, converted to 4-bit grey in the kernel;
+- the policy inside the driver: full GC16 updates first; later DU for changes that are only black and white inside the damage
+  clips, as the stock driver does;
+- the temperature from the TPS65185's thermal zone, by DT reference;
+- the panel rails and VCOM through the mainline `tps65185` regulators;
+- no update-mode property yet: that is the contested part and can come as a separate series once there is agreement. Existing
+  e-reader software then runs through fbdev or KMS without its own backend, at the price of no mode choice.
+
+What does not carry over: `repaper` has 1 bit, no greys, no waveform and no hardware controller. For the EBC, with 16 greys, a LUT
+memory and a separate PMIC, it is a model for the interface and the shape of the driver, not for the algorithm.
+
+### 3.2 E Ink's mode definitions match the RC2 waveform
+
+E Ink's user manual for its 6" ePaper display kit (ED060KC1, public on E Ink's web shop) defines four standard modes and their
+update times at 85 Hz: **INIT** (full erase), **DU** (no flash, any grey to black or white, changed pixels only; 260 ms),
+**GC16** (flashing, 16 greys, all pixels; 450 ms) and **GL16** (16 greys, little flashing, white staying white is not driven;
+450 ms). The RC2's waveform at 24–27 °C has **DU 22 frames** and **GC16 38 frames**; at the stock 11.96 ms per frame that is
+**≈ 263 ms** and **≈ 454 ms**, at 85 Hz 259 and 447 ms [CONFIRMED-device for frame counts and frame time]. GL16 is GC16 without
+the 15 → 15 drive, as defined.
+
+For an upstream "update mode" property this gives a vendor-neutral vocabulary: INIT / DU / GC16 / GL16 with E Ink's own short
+definitions, mapped by the driver to the mode numbers of its waveform. A2 and DU4 (the stock RC2's fast modes) are not in the
+manual and can stay driver extensions.
+
+### 3.3 The Kindle approach (Amazon's GPL kernel)
+
+Amazon publishes the Kindle Paperwhite 3 kernel under the GPL ("Kindle Source Code Notice", release 5.16.2.1.1,
+`Kindle_src_5.16.2.1.1_4097470002.tar.gz`, `linux-3.0.35`; EPDC driver `drivers/video/mxc/mxc_epdc_fb.c` with Amazon's
+`mxc_epdc_fb_lab126.c`, PMIC `drivers/regulator/max77696-epd.c`). It drives i.MX6 SoloLite's EPDC, not an EBC, but the
+division of work is instructive [CONFIRMED-src]:
+
+- **The kernel parses no waveform streams.** From the WBF it reads only the header, the panel name and the voltage-control data;
+  the display runs on pre-converted per-mode tables (`imx/epdc_<mode>.fw`) loaded with `request_firmware()`, with a small
+  built-in fallback. The converter is userspace and is not in the GPL release. The mode table for mode version 0x19 is the RC2's
+  (init, du, gc16, gl16, reagl, reagld, a2, du4); "reagl"/"reagld" are GL16 drive plus image processing in a separate,
+  unpublished module.
+- **Power:** one regulator for the panel rails, then a wait for PWR_GOOD on an interrupt with a **250 ms timeout**; VCOM is a
+  separate regulator enabled **only after PWR_GOOD**, set before each update from the panel passport plus the waveform's
+  per-mode offset. On a PMIC fault: off, 1 ms, on again. Power-off order: VCOM first, then the rails.
+- **Deferred power-off:** a power-down delay (settable from userspace) keeps the rails up between closely spaced updates.
+- **Temperature** is read from the panel's NTC through the PMIC ADC about once a minute, not on every update. Its range lookup
+  never selects the hottest range (see [onyx-rc2-waveform](https://github.com/hsw/onyx-rc2-waveform)); an EBC driver should use
+  the full table.
+- **Panel data from the panel:** the passport in the panel's SPI flash (E Ink's generic layout, the same as on the RC2, see
+  [onyx-rc2-hardware](https://github.com/hsw/onyx-rc2-hardware) `panel-flash/`) gives VCOM and the panel identity.
+
+For the RK3026 this is the same model as the mainline `tps65185` regulators plus §2: firmware tables made in userspace, VCOM
+after power-good with a timeout and a retry, a deferred power-off. The waveform's voltage-control blocks (VGH +25 V, VPOS/VNEG
+±15 V, VGL −20 V on the RC2) let a driver check the PMIC setup at probe.
+
+### 3.4 A userspace converter that exists: epdiy
+
+[epdiy](https://github.com/vroland/epdiy) (LGPL-3.0, an open board and library that drives E Ink panels directly from an ESP32)
+already does the split proposed in §2: a `.wbf` goes through its fork of inkwave to a JSON description of the phases, and
+`scripts/waveform_hdrgen.py` picks modes and temperature ranges and packs the transitions into per-frame tables as a C header
+(`doc/source/filegen.rst`). Its panel list names the ED060KD1 as "should work as ED060XC3", i.e. untested and without its own
+timings or waveform. For the RK3026 the same pipeline would end in the LUT-firmware format of §2; the open decoder in
+[onyx-rc2-waveform](https://github.com/hsw/onyx-rc2-waveform) already produces tables identical to the stock RC2 kernel's.
