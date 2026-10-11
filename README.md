@@ -46,6 +46,8 @@ Comparison of the two kernels:
 | Path | What |
 |---|---|
 | [`driver/README.md`](driver/README.md) | **Main document.** The whole EBC span 0xc060b29c–0xc0617604: architecture, buffers and the userspace contract, `ebc_thread` state machine and mode table, LUT pipeline and temperature, the three engines, power, waveform source and boot, SPI flash, boot animation, PMIC, a 203-function inventory versus the public `.uu` objects, struct offset tables, EBC registers, Unicorn results, tunables and nodes, corrections to `abi/`, notes for clients, open questions. |
+| [`driver/registers.md`](driver/registers.md) | **EBC register reference**, checked against every stock register write and a readback on the device: `WIN_CTRL` masks, the `INT` bit layout, the 6-bit frame count and the 4 KB LUT SRAM, the RC2 values, `GRF_LVDS_CON0` bit 0, clocks; the 64-vs-128-frame question. Newer than §4.5 of the main document. |
+| [`driver/new-driver.md`](driver/new-driver.md) | Towards a new driver: Rockchip's later vendor `ebc-dev` (6.1 tree) and why it does not fit the RK3026, and a minimal in-kernel E-Ink driver (what stays in the kernel, what moves to userspace, a five-item API). |
 | [`driver/tools/`](driver/tools/) | Ghidra headless recipe (`run.sh`, `ImportKallsymsRaw.java`, `DecompileList.java`, `DecompileAllObj.java`, `annotate_decomp.py`), annotated objdump (`kdis.py`), stock-vs-`.uu` diff (`objdiff.py`), liveness inventory (`inventory.py`), Unicorn byte-exact checks (`ebc_emu.py`). |
 | [`reagl/README.md`](reagl/README.md) | REAGL (EPD mode 15): the two-pass algorithm, the halo mask, the thresholds, the internal mode 16, dead code. |
 | [`reagl/tools/`](reagl/tools/) | Ghidra recipe for the REAGL functions and the Unicorn checker `reagl_emu.py`. |
@@ -90,6 +92,13 @@ All of these are explained, with addresses and confidence marks, in [`driver/REA
   unchanged.
 - **Waveform source.** `/ebc_waveform.bin` from the initramfs, read into the 1 MB `waveform_addr=0x7ff00000` window with no size and
   no CRC check. The waveform in the panel's own SPI flash is never used for display.
+- **Registers, checked.** `WIN_CTRL` = `0x20FC0` read with the header's masks (window on, INCR16, FIFO threshold 112), not its
+  shifted constructors; `INT` has three sources (status 2:0, masks 5:3, clears 8:6; done = status bit 1, cleared by bit 7);
+  `DSP_START` bits 7:2 = frames − 1 (≤ 64); LUT SRAM at +0x1000..+0x1FFF; the EBC data lines reach the pads only with
+  `GRF_LVDS_CON0` bit 0. The predicted register values were read back on the device unchanged ([`driver/registers.md`](driver/registers.md)).
+- **Rockchip's later `ebc-dev` is no shortcut.** Its core and waveform parsers are prebuilt AArch64 objects, the core does not use the
+  LUT engine, its TCON layer gets the RK3026 `INT`, `WIN_CTRL`, frame count and LUT size wrong, and its `/dev/ebc` ABI differs
+  from the RC2's ([`driver/new-driver.md`](driver/new-driver.md)).
 - **Known stock bugs.** LUT-mode window start uses a hard-coded 1024-px stride (`(x1 + y1·1024)/2`), so a sub-window with `y1 ≠ 0`
   fetches the wrong rows; `direct_mode_data_change` compares pixels 1–3 of a group as `old == 2·new`; `ebc_empty_buf_get` recurses
   after a signal; `decodewaveform_19` checks its 512-frame limit only after a whole RLE run; mode-9 window bounds are inclusive.

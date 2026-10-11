@@ -843,6 +843,10 @@ No file CRC is checked for WBF.
 | CONFIG_DONE | 0x50 | 0xffff after every config |
 | **LUT SRAM** | +0x1000..+0x1fff | 64 frames × 16 words |
 
+A fuller reference, checked against every stock register write and against a register readback on the device, with the field
+layouts of `WIN_CTRL`, `INT` and `EPD_CTRL`, is in [`registers.md`](registers.md). Where it differs from this table (for example the
+`INT` bit meanings), it is the newer one.
+
 ## 5. Unicorn verification
 
 `tools/ebc_emu.py` follows the pattern of `../reagl/tools/reagl_emu.py`:
