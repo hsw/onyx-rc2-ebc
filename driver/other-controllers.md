@@ -32,6 +32,13 @@ Inputs (all public):
   2026-10-02). The kernels carry kallsyms (symbols recovered with `vmlinux-to-elf`); the device tree is the `rk-kernel.dtb`
   in the RSCE resource image of each `boot.img`. Mainline reference: Linux master `24a19b95` (2026-10-12),
   `drivers/clk/rockchip/clk-rk3128.c`, `arch/arm/boot/dts/rockchip/rk3128.dtsi`.
+- **Storytel Reader** (made by ONYX for Storytel; 2023 firmware): [ntherning/StorytelReaderMods](https://github.com/ntherning/StorytelReaderMods)
+  at `389b3b2` (2025-12-29): the boot logs `dumps/gen{1,2}/bootlog` (sha256 `449c54bf…59b1b`, `9ec2686c…0f328`) and the release
+  `20231112` assets `boot-gen1-patched.img.zip` (sha256 `4b55f24c…4165f`; inside `boot-gen1-patched.img` `56fda19d…6e5`) and
+  `boot-gen2-patched.img.zip` (`35e7b372…4c7`; inside `boot-gen2-patched.img` `31a94a57…dee`), from
+  <https://github.com/ntherning/StorytelReaderMods/releases/download/20231112/>. Gen 2 (RK3128, Android 6): kernel Image
+  from that `boot.img` sha256 `c65e9586b029793d349c2da8d5b0edcbe3a3beb83c17d5306e60986f78962aa3`, DTB (RSCE `second`) `f4101eaf…1a29`.
+  Gen 1 (RK3026, Android 4.2): ramdisk only, no kernel. Static analysis and log reading only.
 - **RK3026**: the stock RC2 kernel Image (2017-11-07; see the [top README](../README.md#the-analysed-kernel)), checked in a
   disassembly of that kernel and, where marked, on the device; the public headers in
   [rychly/rk3026-linux-sources](https://github.com/rychly/rk3026-linux-sources).
@@ -524,6 +531,84 @@ ONYX's RK3128 driver gets by with direct frames only, as Rockchip's RK3566 vendo
 updates) also do, so a first mainline driver can use direct frames only on both chips. What differs is above the controller:
 ONYX adds its own software EPDC and ioctl ABI, which a mainline driver would not follow. The RK3566's register differences
 (§3.2) are still the dividing line between this IP family and its successor.
+
+### 8.1 Storytel Reader: a further RK3128 sample (gen 2) and an RK3026 sample (gen 1)
+
+The Storytel Reader (ONYX hardware, sold by Storytel) comes in two generations, both with boot logs in the project above.
+
+**Gen 2: RK3128, Android 6, kernel 3.10.104.** The `boot.img` of the release is an ANDROID! image with kernel (LZO zImage, 16 348 896 B
+Image), ramdisk and an RSCE `second` with the DTB. The README says only the ramdisk is patched (`mods/gen2/01.patch`, magisk files);
+the kernel is the original one. Its banner is `3.10.104 (vinicius@…) #1 SMP PREEMPT Wed Feb 15 11:11:51 UTC 2023`, i.e. not an ONYX
+Jenkins build: Storytel (or its contractor) built it from ONYX's tree. Symbols from kallsyms (94 037), disassembly with llvm-objdump
+(GNU objdump misdecodes some instructions in these ELFs).
+- **Generation: the Darwin 7 one, older than Livingstone.** [CONFIRMED-dis] Version string `K29_EBC_DRIVER_VERSION_1.00` (Darwin 7
+  has the same, Livingstone `ONYX_EBC_DRIVER_VERSION_2.00`). The `rk3128_ebc_*`/`ebc_*`/`onyx_*`/`epdc_*` symbol set equals Darwin 7's
+  except seven names; what gen 2 lacks are device extras (vibrator, key control, battery `cc`/`rdc` counters, RGB-to-YUV helper). It has
+  the framebuffer-style engine (`onyx_epdc_fb_ioctl/write/dpy_update`, `onyx_epdc_submit_work_func`, `onyx_lut_is_collision*`), none of
+  Livingstone's `epdc_msg_*` / waveform-buffer queue / Regal pass. `epdc_ioctl` is a 28-entry jump table (0x7000–0x701B) plus an
+  `ebc_io_ctl_hook` and the Rockchip-style `ebc_buf_*` list (`ebc_empty_buf_get`, `ebc_dsp_buf_get`, two buffers of 200 704 B).
+- **Register layer: identical to Livingstone and Darwin 7.** [CONFIRMED-dis] `ebc_border_set` and `ebc_image_addr_set` are
+  instruction-identical; `ebc_dsp_ctl_set`, `ebc_win_dsp_set`, `ebc_panel_scan_set` (same sizes 80/160/232 B), `rk3128_ebc_isr` (176 B)
+  and `rk3128_ebc_set_panle_timing` differ only in branch targets, literal-pool addresses and the driver-struct field offsets
+  (ISR 0x104 against 0xf4). `rk3128_ebc_update` writes `WIN_MST0`, `DSP_START` = 1, `INT` (clear 0xfe00/0xf8, set 0x28) and
+  `CONFIG_DONE` = 1 as in §8, and has a one-shot register dump behind a debug flag. No write to `LUT` (+0x1000), `WIN_MST1` or `EPD_CTRL`.
+- **Direct mode.** [CONFIRMED-log] `waveform_file_format` and `color_panel`/`half_empty` absent from the DT default to 0
+  (`get waveform_file_format failed! set default val 0!`), and the PVI/WBF parser runs (`onyx_waveform_parse_pvi`).
+- **Waveform.** [CONFIRMED-log] firmware request `/vendor/waveform/waveform.wbf` fails ("fail to open"), then
+  `request_firmware_nowait [/waveform/eink_waveform.wbf]`, 296 408 B; header name `320_R083_ABB401_ED060XCDU2_TC`, frame rate 85 Hz,
+  `waveform_lookup_table_fmt` = 4, `mode_num` = 8, `temp_num` = 14, 32 gray levels (5-bit file, `is_5bit_to_4bit` = 0); two extra
+  modes are converted (`waveform_mode_index` 4 and 5, GLR16 index 7). Parsing takes about 0.14 s.
+- **Panel: a different one.** [CONFIRMED-log] `eink-timings` in the DTB: `ED060XH7`, 1024×758, `panel_width` 8, SDCLK 20 MHz, margins
+  6/38/4/5, `hsync_len` 6, `vsync_len` 2, `gdck_sta` 4, `lgonl` 0x106 (262), frame rate 85. `dclk_ebc` is read back as 80 MHz = 4 × SDCLK, as
+  on the RC2. The window registers follow: `WIN_VIR` = 0x400, `WIN_ACT` = `WIN_DSP` = `DSP_ACT_INFO` = 0x02F60400 (758 << 16 | 1024),
+  `WIN_CTRL` = 0x20FC0. So the register constants of §8 are not panel-specific; only the timing inputs change.
+- **Device tree.** [CONFIRMED-dis] `ebc@10114000` `rockchip,rk3128-ebc`, reg `0x10114000/0x4000` and `0x20038150/4` (`ebc_lvds_ctrl`), IRQ
+  SPI 49, clocks `aclk_ebc`, `dclk_ebc`, `hclk_ebc`, `pd_ebc`, `sclk_pll`; `tps6518x@68` (`TI,tps6518x`: `pwr_seq0/1/2` 0xe1/0x30/0x33,
+  `upseq0` 0xe4, `dwnseq0` 0x1e, `max_wait` 24, `delay_3v3_highv` 3, VCOM-control and wakeup GPIOs; no PWRGOOD, INT or V3P3 pin); `sepdc`
+  (`onyx,sepdc`); QoS node `ebc@1012f080`, priority 3/3.
+- **PMIC and temperature.** [CONFIRMED-log] TPS6518x rev ID 0x66 (a TPS65185-family part; the log also prints `ERROR TPS6518x waiting for power
+  good!` once, because the DT has no PWRGOOD pin), I2C 2-0068, `tps6518x_sensor_probe`; the temperature reaches the update path as
+  `onyx_epdc_set_temp(): temp val = 24`. [CONFIRMED-dis] the only direct caller of `onyx_epdc_set_temp` is `onyx_epdc_draw_mode0`.
+- **Completion.** [CONFIRMED-dis] `rk3128_ebc_set_isr_callback` stores a pointer at struct offset 0x104, which `rk3128_ebc_isr` calls (no direct `bl` to the setter: it is reached through an ops table); `onyx_epdc_EBC_isr_callback` is the EPDC-side function; the EBC part of the
+  driver comes up as `onyx_epdc_EBC_init` → `ebc_panel_scan_set`, `ebc_win_dsp_set`, `ebc_dsp_ctl_set`, `rk3128_ebc_set_panle_timing`.
+- **A real register dump** from a running RK3128 (`rk3128_ebc_reg_dump`, taken inside the first update). [CONFIRMED-log]
+  `0x00` = 0, **`0x04` (EPD_CTRL) = 0x00D76400**, `0x08` = 0x30000, `0x0C` = 0x01320006, `0x10` = 0x010C000C, `0x14` = 0x03010002,
+  `0x18` = 0x02FC0006, `0x1C` = 0x02F60400, `0x20` = 0x20FC0, `0x24` = frame address, `0x28` (WIN_MST1) = 0x63B78BA0 (stale, never written),
+  `0x2C` = 0x400, `0x30` = `0x34` = 0x02F60400, `0x38` = 0x0006000D, `0x3C` = 0x28, `0x50` = 0 (reads 0 after the driver wrote 1),
+  `0x1000` = 0. GRF `LVDS_CON0` reads 0x381 before and after the driver's write.
+- **Boot facts.** [CONFIRMED-log] two probes use the same region: `rk31xx-lvds 20038000.lvds` claims `0x20038000–0x2003BFFF`, so the EBC
+  driver's request for `0x20038150–53` fails with "can't request region … ioremap ebc-lvds ctrl reg failed", yet the probe reports success
+  and `rk31xx_output_ebc` reads and writes `RK312X_GRF_LVDS_CON0` (so the access goes another way). The RK3128 therefore has the EBC data-line
+  gate in the LVDS block at `0x20038000` + 0x150.
+
+**Gen 1: RK3026, Android 4.2, kernel 3.0.36+ (`jenkins@jim-hp-workstation-15`, `#1` Wed Aug 8 18:38:56 CST 2018).**
+- **No kernel in the image.** `boot-gen1-patched.img` is a `KRNL` container around a 1 773 648-byte gzip cpio ramdisk (42 entries): the
+  kernel is in the separate `kernel` partition (8 MiB at sector 0x4000; `boot` is at 0x8000, `mtdparts` in `dumps/gen1/params`). The
+  release therefore gives no kernel to compare; the boot log is all there is.
+- **Same machine, older EBC driver.** [CONFIRMED-log] banner `[RK_EPD]: version 1.02 20141016` (same as the RC2 kernel) but
+  **`V1.0.11 VERSION 20170418`**, where the RC2 kernel (2017-11-07) prints `V1.0.20 VERSION 20171023-23`. So the EBC span is **not** the
+  RC2's although the kernel is 9 months younger: the Storytel kernel carries an older EBC branch. Not comparable symbol by symbol.
+- Memory reserved (`ebc waveform buf` 1 MiB at 0x7FF00000, `ebc disp buf` 8 MiB at 0x7F700000, `fb0 buf` 9 MiB at 0x7EE00000);
+  `waveform_addr=0x7ff00000` on the command line and `get_ebc_waveform_addr`; the log prints `epd_lut_from_nand_init` waveform info
+  `bf 24 4c 7a` and `spi_id_buffer = 320_G108_AB1F01_ED060XC9T1_TCx`, then `get lut from file sucesss`; modes are chosen as `eink mode = 5` / `3`, with
+  `epd_lut_data_get_pvi_hard 5/6` (the RK3026 LUT-from-PVI path). The panel is an ED060XC9 (also a 1024×758 6" panel), not the RC2's.
+- PMIC `tps65185_probe` I2C 0x68, `papyrus: detected device with ID=65 (TPS65185r1p2)`, VCOM read back 211 mV (the code then prints
+  `panel_get_id unknown vcom value … default to -1.80V`, vcom -2200). Other ONYX facts: `pcb version [V1.73]`, battery fuel gauge `cw_*`.
+- **Ramdisk files.** `ebc_waveform.bin` (251 165 B, sha256 `efdee319…56ca`, header name `320_G108_AB1F01_ED060XC9T1_TCx`) differs from the RC2's;
+  `rk30xxnand_ko.ko.3.0.36+` (181 130 B, sha256 `de80b9c1…b287`) is **byte-identical** to the RC2's.
+
+**[VERIFY] items of §8 against this data.**
+- `0x20038000` block: closed, the RK3128 LVDS controller (`rk31xx-lvds 20038000.lvds`, `RK312X_GRF_LVDS_CON0` at +0x150) [CONFIRMED-log].
+- `waveform_file_format` default: closed, 0 [CONFIRMED-log]. Second RK3128 device with the identical register layer: [CONFIRMED-dis].
+- `EPD_CTRL` source: the driver does not write it (dis, also in this kernel) and a running device holds `0x00D76400`, not the RK3026's
+  `0xA98EFF03` and not that formula's result for this panel (b15:8 would be 255, b26:16 would be 272) [CONFIRMED-log]. It is therefore reset
+  or loader state; the bit meaning on RK3128 stays open.
+- `CONFIG_DONE` value: reads 0 after a write of 1 (and the start bit `DSP_START` reads 0): a strobe, bit 0 is enough in practice [STRONG].
+- Temperature setter caller: one direct caller, `onyx_epdc_draw_mode0`; further callers through pointers are not excluded [STRONG].
+- LUT SRAM at +0x1000: reads 0 on a running device, never written; still [VERIFY] (a zero read does not show that RAM is there).
+- `DSP_CTRL` = 0x00030000 swap/bit 27: the running value is the same 0x30000 here; the meaning of the swap bits is still [VERIFY]
+  (the RK3128 direct mode needs different packing, or the bits are unused).
+- Still open: the RK3128 `INT` mask value 0x28 matches the RK3026; `0x38` = 0x6000D has no counterpart in the RK3026 register table.
 
 ## 9. Not analysed
 
