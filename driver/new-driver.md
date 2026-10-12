@@ -55,6 +55,10 @@ buffers, ABI, PMIC) has to be written anew or taken from mainline.
 The RK3026 has a **hardware LUT**: the per-pixel "old level → new level" work is done by the controller, not by the CPU. So the
 kernel does not need to compute frames, and the driver can be small, which also makes it easier to review.
 
+The same driver can serve the **RK3128**: its EBC is the same IP (same registers 0x00–0x50, interrupt bits, base and IRQ), and
+ONYX's RK3128 driver runs it in direct mode only ([`other-controllers.md`](other-controllers.md) §8). Whether the RK3128 has the
+LUT SRAM is open [VERIFY], so a first series that also targets the RK3128 should start with direct frames.
+
 **What has to stay in the kernel:**
 - the controller: timings, frame start, the interrupt;
 - loading the LUT in 64-frame chunks from the interrupt: the timing is hard, and a late chunk drives the panel with the wrong

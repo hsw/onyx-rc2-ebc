@@ -64,6 +64,10 @@ Comparison of the two kernels:
 
 All of these are explained, with addresses and confidence marks, in [`driver/README.md`](driver/README.md) and [`reagl/README.md`](reagl/README.md).
 
+- **The RK3128 has the same EBC.** ONYX's RK3128 readers (kernel 3.10) program registers 0x00–0x50 with the same formulas and
+  the same interrupt bits, at the same base and IRQ, and their DT carries the RC2's panel timings; that driver uses only the
+  direct mode (the CPU builds every frame). One mainline driver can cover both SoCs
+  ([`driver/other-controllers.md`](driver/other-controllers.md) §8).
 - **Buffer model.** ioctl 0x7000 hands out one of **4 slots of w·h bytes** (8-bpp capacity; a 4-bpp frame uses the first half) from an
   8 MB pool reserved at 0x7f700000. It blocks until a slot is free. At steady state one slot is pinned as the "old" image, so userspace
   has at most 3 in flight. The pool is mmapped write-combining with no bounds check; the kernel reads it through a cached mapping.
