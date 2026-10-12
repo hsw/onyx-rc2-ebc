@@ -84,6 +84,7 @@ In DRM terms this is a plane with `FB_DAMAGE_CLIPS`, one "update mode" property 
 mode property, which is exactly where the 2022 RFCs (Samuel Holland's `rockchip_ebc` for the RK3568, Andreas Kemnade's i.MX6 EPDC)
 stopped; a small interface is easier to agree between vendors than a driver that parses waveforms and picks modes itself. A
 compatible `/dev/ebc` for existing clients of the stock ABI can be a thin out-of-tree wrapper over the same driver core.
+Both RFCs, and Rockchip's vendor drivers, are compared with the RK3026 in [`other-controllers.md`](other-controllers.md).
 
 What a simple LUT-firmware format needs: a header (magic, version, panel ID and CRC of the source WBF, number of modes and
 temperature ranges, word size), then for each mode × range pair the frame count and the frames of 16 RK3026 LUT words. The
