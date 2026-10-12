@@ -21,6 +21,17 @@ Inputs (all public):
 - **Kindle**: Amazon's GPL release for the Kindle Paperwhite 3 (7th generation), "Kindle Source Code Notice", release
   5.16.2.1.1, `Kindle_src_5.16.2.1.1_4097470002.tar.gz`, kernel `linux-3.0.35` (`drivers/video/mxc/mxc_epdc_fb.c` with
   Amazon's `mxc_epdc_fb_lab126.c`, `drivers/regulator/max77696-epd.c`).
+- **ONYX RK3128**: two ONYX BOOX firmware kernels (static analysis only, nothing run): Livingstone, build
+  `2022-08-16_11-05_2.1.2_467fe95`, kernel 3.10.0 `#738` (2022-08-04), `update.upx` from
+  <https://onyx-boox.ru/files/livingstone/update.upx> (sha256 `90c3cd5f…3eef`), decompressed kernel Image sha256
+  `a4ff04ed58bff9c1bc3e0e8dde50a7adb4d964a8fb169a745d30f2fdce7a2cab`; and Darwin 7 (`MC_DARWIN7`), build
+  `2022-01-17_21-12_2.1.2_5b90d57`, kernel 3.10.0 `#71`, <https://onyx-boox.ru/files/darwin7/update.upx> (sha256
+  `fa338693…625b`), Image sha256 `4d99c6210f9871795a944e4a5b7d80dbae0189a1e5f051e39ab67625681b13b9`. `update.upx` is AES-128-CFB of
+  a recovery zip; the per-model key comes from the community list
+  [Hagb/decryptBooxUpdateUpx](https://github.com/Hagb/decryptBooxUpdateUpx) (`BooxKeys.csv`, last change `ca511056`,
+  2026-10-02). The kernels carry kallsyms (symbols recovered with `vmlinux-to-elf`); the device tree is the `rk-kernel.dtb`
+  in the RSCE resource image of each `boot.img`. Mainline reference: Linux master `24a19b95` (2026-10-12),
+  `drivers/clk/rockchip/clk-rk3128.c`, `arch/arm/boot/dts/rockchip/rk3128.dtsi`.
 - **RK3026**: the stock RC2 kernel Image (2017-11-07; see the [top README](../README.md#the-analysed-kernel)), checked in a
   disassembly of that kernel and, where marked, on the device; the public headers in
   [rychly/rk3026-linux-sources](https://github.com/rychly/rk3026-linux-sources).
@@ -37,21 +48,21 @@ open.
 Short cells; the sections below have the detail and the confidence marks. "—" = does not exist, "n/a" = does not apply,
 "unknown" = not found in what was read.
 
-| | RK3026 stock (this repo) | RK3566 `ebc_dev` 1.01 / 2.09 (Ralim) | Rockchip 6.1 `ebc-dev` 1.05 | Holland RFC (RK3566/68) | Kemnade RFC (i.MX6 EPDC) | Kindle PW3 (i.MX6SL EPDC) |
-|---|---|---|---|---|---|---|
-| **Register layout vs RK3026** | reference: 21 registers 0x00–0x50, LUT SRAM at +0x1000 | 0x00–0x50 same offsets and names; `DSP_START` count, `INT`, `WIN_CTRL`, top of `EPD_CTRL` differ; adds `VNUM` 0x54, `WIN_MST2` 0x58 | as RK3566 (`tcon/ebc_tcon.c`) | RK3566 header plus `DSP_RST`, polarity bits, `DSP_FRM_INT_NUM` | other controller | other controller (same EPDC family as Kemnade) |
-| **LUT engine used?** | yes: modes 1–6, 8, 10, 15, 16; CPU direct for 9, 11, 12 and AUTO 0 | no: every mode is CPU direct, one frame per start | no [STRONG] | only for full-screen reset and clear; partial updates CPU direct (default) or three-window | yes: hardware LUTs, up to 64 at once | yes (same EPDC hardware) |
-| **LUT size / frames per load** | 4 KB = 64 frames × 16 words; longer waveforms in 64-frame chunks reloaded from the IRQ | 16 KB: ≤ 256 frames (16-level) or ≤ 64 (32-level mode); not used | same hardware; upload check "≤ 256 frames" | whole 16 KiB written, ≤ 256 phases in one start | n/a: the controller reads the waveform from memory | n/a |
-| **Interrupt bits** | 3 sources: status 2:0, mask 5:3, clear 8:6; done = status 1, clear 7 | 4 sources: status 3:0, mask 7:4, clear 11:8; done = status 1, clear 9 | as RK3566 | as RK3566 | per-LUT completion (`EPDC_IRQ1`/`EPDC_IRQ2`, one bit per LUT, 64 LUTs), working-buffer complete, LUT collision, TCE underrun, frame end [CONFIRMED-src, patch 4/6] | as Kemnade (same hardware) |
-| **Windows (`WIN_MST0/1/2`)** | LUT: MST0 old, MST1 new; direct: MST0 = 2-bit frame; no MST2 | MST0 = 2-bit frame only (the core); MST2 exists | as RK3566 | LUT: MST0 new, MST1 old (LUT transposed); three-window: per-pixel phase buffer in MST2; direct: MST0 | n/a (16-bpp working buffer) | n/a |
-| **Waveform format, parsed where** | E Ink WBF `/ebc_waveform.bin` from the initramfs; decoded in the kernel on every update | WBF or Rockchip `rkf`; in the kernel (prebuilt) | as 1.01, prebuilt; reserved memory or `waveform.bin` | the panel's raw WBF (`rockchip/ebc.wbf`); kernel helper, 5-bit files only | NXP's pre-converted `imx/epdc/epdc.fw`; the controller decodes | gzipped, pre-converted `imx/epdc_<video-mode name>.fw` made in userspace; the kernel reads only the header, the temperature table and the voltage data [CONFIRMED-src: `mxc_epdc_fb.c:5793-5808`, `5646`, `5659-5674`] |
-| **Temperature-range selection** | range `i − 1` for the first `T < bound[i]`; **≥ 43 °C falls to range 0** (bug) | **one range warmer** than RK3026; last range never used | as RK3566 | RK3026 convention; below the first bound keeps the old LUT; last range never used [STRONG] | `bound[i] ≤ T < bound[i+1]`, clamped to the first and last range | last range never used; below the table: range 0 [CONFIRMED-src: `mxc_epdc_fb.c:2216-2241`] |
-| **Who chooses the update mode** | userspace per frame (ioctl 0x7001); the kernel drops unchanged frames, promotes black/white-only frames to DU, runs REAGL | userspace per buffer (`/dev/ebc`, other mode numbers) | userspace per buffer | module parameter `default_waveform` (GC16); none from userspace | the hardware (`WAVEFORM_MODE_AUTO`) | userspace per update, or AUTO by a PxP histogram [CONFIRMED-src: `mxc_epdc_fb.c:4678-4690`] |
-| **Temperature source** | TPS65185 ADC on every update (I²C, +10 ms); > 50 → 25 °C, read as unsigned | TPS65185; 1.01 > 50 → 25 °C (same message), 2.09 clamps to 0–50 | TPS65185 polled every 10 s; outside 0–50 → 25 °C | IIO channel, every refresh; review asked for a thermal zone | thermal zone by name, default 20 °C | panel NTC through the PMIC ADC (channel AIN0), every 60 s, default 25 °C [CONFIRMED-src: `drivers/hwmon/max77696-adc.c:45-48`, `1034-1067`] |
-| **Panel timings** | panel table compiled into the kernel | device tree, as 6.1 [STRONG] | `ebc-dev` device-tree node, `panel,*` properties | `drm_panel` (panel-simple) through the OF graph | the controller node | board file, mode chosen by the first three barcode characters [CONFIRMED-src: `arch/arm/mach-mx6/board-mx6sl_wario.c:1055-1260`, `mxc_epdc_fb_lab126.c:1418`, `2586-2599`] |
-| **PMIC** | TPS65185: on when an update arrives, off as soon as the queue drains | TPS65185 behind an `ebc_pmic` layer | TPS65185 vendor driver (not safe on the RC2) | `panel`/`vcom`/`vdrive` regulators on the EBC node; no PMIC driver in the series | regulators (TPS65185 or SY7636A) | MAX77696: rails, then VCOM after PWR_GOOD; deferred power-off [CONFIRMED-src: `mxc_epdc_fb.c:1425-1523`, `drivers/regulator/max77696-epd.c:237-305`, `398-436`] |
-| **Completion event to userspace** | none in general; mode 8 (BLOCK) blocks its ioctl until shown | unknown | unknown | fake vblank when the pixels are copied, not when the panel is done | none: `pipe_update` only queues one hardware update per damage clip (patch 4/6); per-LUT completion IRQs stay inside the driver (they free the LUT and the update buffer); the only wait is `mxc_epdc_flush_updates` on pipe disable [CONFIRMED-src] | `MXCFB_WAIT_FOR_UPDATE_COMPLETE` on an update marker: returns when the LUT-complete interrupt has fired, 5 s timeout [CONFIRMED-src, §7] |
-| **Status / fate** | shipping binary, no source (kernel 3.0.36) | prebuilt AArch64 objects in the 4.19 BSP; Ralim's decompile, untested | prebuilt AArch64 core, not wired into the 6.1 build | RFC v1 only; last reply 2022-06-08 | RFC v1 only; thread ends 2022-03-14 [VERIFY later versions] | shipped product kernel, GPL release (3.0.35) |
+| | RK3026 stock (this repo) | RK3566 `ebc_dev` 1.01 / 2.09 (Ralim) | Rockchip 6.1 `ebc-dev` 1.05 | Holland RFC (RK3566/68) | Kemnade RFC (i.MX6 EPDC) | Kindle PW3 (i.MX6SL EPDC) | RK3128 (ONYX, kernel 3.10) |
+|---|---|---|---|---|---|---|---|
+| **Register layout vs RK3026** | reference: 21 registers 0x00–0x50, LUT SRAM at +0x1000 | 0x00–0x50 same offsets and names; `DSP_START` count, `INT`, `WIN_CTRL`, top of `EPD_CTRL` differ; adds `VNUM` 0x54, `WIN_MST2` 0x58 | as RK3566 (`tcon/ebc_tcon.c`) | RK3566 header plus `DSP_RST`, polarity bits, `DSP_FRM_INT_NUM` | other controller | other controller (same EPDC family as Kemnade) | same IP: window `0x10114000`, 16 KiB, GIC SPI 49; the driver writes the same offsets 0x00–0x50 with the RK3026 formulas (`ebc_panel_scan_set`, `ebc_win_dsp_set`, `ebc_dsp_ctl_set`, `ebc_image_addr_set`, even the same function names) [CONFIRMED-dis]; no RK3566 registers (`VNUM`, `WIN_MST2`) |
+| **LUT engine used?** | yes: modes 1–6, 8, 10, 15, 16; CPU direct for 9, 11, 12 and AUTO 0 | no: every mode is CPU direct, one frame per start | no [STRONG] | only for full-screen reset and clear; partial updates CPU direct (default) or three-window | yes: hardware LUTs, up to 64 at once | yes (same EPDC hardware) | no: every frame is a direct-mode frame (`WIN_MST0` = 2-bit drive codes, `DSP_START` = 1); nothing is written to +0x1000; frames built by the CPU in a software EPDC (`onyx,sepdc`) [CONFIRMED-dis] |
+| **LUT size / frames per load** | 4 KB = 64 frames × 16 words; longer waveforms in 64-frame chunks reloaded from the IRQ | 16 KB: ≤ 256 frames (16-level) or ≤ 64 (32-level mode); not used | same hardware; upload check "≤ 256 frames" | whole 16 KiB written, ≤ 256 phases in one start | n/a: the controller reads the waveform from memory | n/a | n/a (SRAM unused); `DSP_START` frame count always 0; software side: 128 LUT slots (bitmap of 4 words, `epdc_get_free_lut` stops at 127) [CONFIRMED-dis] |
+| **Interrupt bits** | 3 sources: status 2:0, mask 5:3, clear 8:6; done = status 1, clear 7 | 4 sources: status 3:0, mask 7:4, clear 11:8; done = status 1, clear 9 | as RK3566 | as RK3566 | per-LUT completion (`EPDC_IRQ1`/`EPDC_IRQ2`, one bit per LUT, 64 LUTs), working-buffer complete, LUT collision, TCE underrun, frame end [CONFIRMED-src, patch 4/6] | as Kemnade (same hardware) | as RK3026: status 2:0, mask 5:3, clear 8:6; done = status 1, clear 7, mask 4; a start clears bits 15:9 and 7:3 of `INT` and sets `0x28` (frame count field 15:9 = 0) [CONFIRMED-dis] |
+| **Windows (`WIN_MST0/1/2`)** | LUT: MST0 old, MST1 new; direct: MST0 = 2-bit frame; no MST2 | MST0 = 2-bit frame only (the core); MST2 exists | as RK3566 | LUT: MST0 new, MST1 old (LUT transposed); three-window: per-pixel phase buffer in MST2; direct: MST0 | n/a (16-bpp working buffer) | n/a | direct only: `WIN_MST0` = frame address; `WIN_MST1` never written; `WIN_ACT`/`WIN_DSP` = the full panel, `WIN_CTRL` = `0x20FC0 \| fmt`, the RK3026 constant [CONFIRMED-dis] |
+| **Waveform format, parsed where** | E Ink WBF `/ebc_waveform.bin` from the initramfs; decoded in the kernel on every update | WBF or Rockchip `rkf`; in the kernel (prebuilt) | as 1.01, prebuilt; reserved memory or `waveform.bin` | the panel's raw WBF (`rockchip/ebc.wbf`); kernel helper, 5-bit files only | NXP's pre-converted `imx/epdc/epdc.fw`; the controller decodes | gzipped, pre-converted `imx/epdc_<video-mode name>.fw` made in userspace; the kernel reads only the header, the temperature table and the voltage data [CONFIRMED-src: `mxc_epdc_fb.c:5793-5808`, `5646`, `5659-5674`] | E Ink WBF ("PVI") or an i.MX-style pre-converted file, chosen by the DT/driver value `waveform_file_format` (0 = PVI parser `onyx_waveform_parse_pvi`, 1 = `onyx_waveform_parse_imx`; other value: error); `request_firmware_nowait("waveform.wbf")` from `/vendor/waveform/`, else the file `/waveform/eink_waveform.wbf`; decoded in the kernel, to per-frame buffers by the CPU [CONFIRMED-dis; default value of the property unknown, [VERIFY]] |
+| **Temperature-range selection** | range `i − 1` for the first `T < bound[i]`; **≥ 43 °C falls to range 0** (bug) | **one range warmer** than RK3026; last range never used | as RK3566 | RK3026 convention; below the first bound keeps the old LUT; last range never used [STRONG] | `bound[i] ≤ T < bound[i+1]`, clamped to the first and last range | last range never used; below the table: range 0 [CONFIRMED-src: `mxc_epdc_fb.c:2216-2241`] | not traced; `onyx_epdc_set_temp` stores a temperature byte pushed by userspace and clears an 11-entry per-range table [VERIFY] |
+| **Who chooses the update mode** | userspace per frame (ioctl 0x7001); the kernel drops unchanged frames, promotes black/white-only frames to DU, runs REAGL | userspace per buffer (`/dev/ebc`, other mode numbers) | userspace per buffer | module parameter `default_waveform` (GC16); none from userspace | the hardware (`WAVEFORM_MODE_AUTO`) | userspace per update, or AUTO by a PxP histogram [CONFIRMED-src: `mxc_epdc_fb.c:4678-4690`] | userspace per update (HWC through `SET_EBC_SEND_UPDATE`); the kernel only maps its mode number to the waveform file's mode index (`onyx_waveform_mode_transform`, 13-row table of 56-byte rows chosen by the WBF type byte); AUTO is not a hardware mode [STRONG] |
+| **Temperature source** | TPS65185 ADC on every update (I²C, +10 ms); > 50 → 25 °C, read as unsigned | TPS65185; 1.01 > 50 → 25 °C (same message), 2.09 clamps to 0–50 | TPS65185 polled every 10 s; outside 0–50 → 25 °C | IIO channel, every refresh; review asked for a thermal zone | thermal zone by name, default 20 °C | panel NTC through the PMIC ADC (channel AIN0), every 60 s, default 25 °C [CONFIRMED-src: `drivers/hwmon/max77696-adc.c:45-48`, `1034-1067`] | TPS65185 ADC as on the RC2: regulator `TMST` of the `tps6518x` driver (start conversion in register 0x0C, poll for done, bit 5) [CONFIRMED-dis]; who calls it and how often: [VERIFY] |
+| **Panel timings** | panel table compiled into the kernel | device tree, as 6.1 [STRONG] | `ebc-dev` device-tree node, `panel,*` properties | `drm_panel` (panel-simple) through the OF graph | the controller node | board file, mode chosen by the first three barcode characters [CONFIRMED-src: `arch/arm/mach-mx6/board-mx6sl_wario.c:1055-1260`, `mxc_epdc_fb_lab126.c:1418`, `2586-2599`] | device tree node `eink-timings`: `panel_name = ED060KD1`, 1448×1072, `sdclk-frequency` 40 MHz, margins 8/55/4/4, `hsync_len` 17, `vsync_len` 2, `gdck_sta` 100, `lgonl` 281, frame rate 85: the RC2's constants [CONFIRMED, DTB] |
+| **PMIC** | TPS65185: on when an update arrives, off as soon as the queue drains | TPS65185 behind an `ebc_pmic` layer | TPS65185 vendor driver (not safe on the RC2) | `panel`/`vcom`/`vdrive` regulators on the EBC node; no PMIC driver in the series | regulators (TPS65185 or SY7636A) | MAX77696: rails, then VCOM after PWR_GOOD; deferred power-off [CONFIRMED-src: `mxc_epdc_fb.c:1425-1523`, `drivers/regulator/max77696-epd.c:237-305`, `398-436`] | TPS65185 (`TI,tps6518x` at I²C `0x68`, `pwr_seq`/`upseq`/`dwnseq`, VCOM and wake-up GPIOs), regulators `DISPLAY`, `VCOM`, `V3P3`, `TMST`; powered up per update, powered down by a delayed worker (`onyx_epdc_set_pwrdown_delay`) [CONFIRMED-dis/DTB] |
+| **Completion event to userspace** | none in general; mode 8 (BLOCK) blocks its ioctl until shown | unknown | unknown | fake vblank when the pixels are copied, not when the panel is done | none: `pipe_update` only queues one hardware update per damage clip (patch 4/6); per-LUT completion IRQs stay inside the driver (they free the LUT and the update buffer); the only wait is `mxc_epdc_flush_updates` on pipe disable [CONFIRMED-src] | `MXCFB_WAIT_FOR_UPDATE_COMPLETE` on an update marker: returns when the LUT-complete interrupt has fired, 5 s timeout [CONFIRMED-src, §7] | `SET_EBC_WAIT_ALL_UPDATE_COMPLETE` flushes the update queue and sleeps on a completion; a per-update wait (`onyx_epdc_fb_wait_update_complete`) finds the update by its **magic** (marker) in the list and waits up to 2000 ms on that update's completion (`-ETIMEDOUT` after). The EBC ISR calls a callback that releases a semaphore per frame and wakes the waiters after the last frame [CONFIRMED-dis] |
+| **Status / fate** | shipping binary, no source (kernel 3.0.36) | prebuilt AArch64 objects in the 4.19 BSP; Ralim's decompile, untested | prebuilt AArch64 core, not wired into the 6.1 build | RFC v1 only; last reply 2022-06-08 | RFC v1 only; thread ends 2022-03-14 [VERIFY later versions] | shipped product kernel, GPL release (3.0.35) | shipping kernel, no source; Livingstone (2022-08) and Darwin 7 (2022-01); driver version string `ONYX_EBC_DRIVER_VERSION_2.00` |
 
 ## 2. RK3026 stock (this repository)
 
@@ -441,14 +452,89 @@ the WBF header fields, voltage-control blocks and its temperature lookup in
   working buffer, `mxc_epdc_fb.c:5286-5300`). A marker is only tracked when non-zero (`3807`). `EPDC_FLAG_TEST_COLLISION`
   (`mxcfb.h:111`) makes a dry-run update that takes no LUT (`mxc_epdc_fb.c:3218`).
 
-## 8. Not analysed
+## 8. RK3128 (ONYX, kernel 3.10)
+
+ONYX's RK3128 BOOX firmware (Android 4.4, kernel 3.10.0) carries a driver whose register layer (`rk3128_ebc_*`, `ebc_*_set`) is
+the RK3026 stock driver ported with almost no change, with a different frame engine on top (`onyx,sepdc`, a software EPDC).
+Analysed: Livingstone (`#738`, 2022-08) in full, Darwin 7 (`#71`, 2022-01) for the differences; sources in the list at the top.
+
+**Conclusion: the RK3128 EBC is the same IP generation as the RK3026's.** [CONFIRMED-dis] for the register side:
+- The device tree node `ebc@10114000` (`rockchip,rk3128-ebc`) maps the same 16 KiB window as the RK3026, with IRQ `GIC_SPI 49`
+  (the RK3026's Linux IRQ 81), clocks `aclk_ebc`, `hclk_ebc`, `dclk_ebc`, power domain `pd_ebc`, and a second resource at
+  `0x20038150` named `ebc_lvds_ctrl` (the `GRF_LVDS_CON0` register that gates the EBC data lines on the RK3026, at GRF
+  `0x…8150` there; the base differs in the node, the offset 0x150 matches; [VERIFY] which block `0x20038000` is).
+  The driver sets `GRF_LVDS_CON0` bit 0 (value `0xffff0381` in the write-mask format) when it enables the output.
+- Writers of the window: `ebc_panel_scan_set` writes `DSP_HTIMING0/1`, `DSP_VTIMING0/1`, `DSP_ACT_INFO` (0x0C–0x1C) with the
+  RK3026 sums of hsync, start, end, gdck_sta and lgonl; `ebc_win_dsp_set` writes `WIN_CTRL` = `0x20FC0 | fmt` (the same constant
+  as the RK3026, [`registers.md` §3.4](registers.md)), `WIN_VIR`, `WIN_ACT`, `WIN_DSP` and `WIN_DSP_ST` = hsync+hstart+1 /
+  vstart+4; `ebc_border_set` zeroes `VCOM0–3`; `ebc_image_addr_set` writes `WIN_MST0/1`; each ends with `CONFIG_DONE` = 1. The
+  function names are the RK3026's.
+- The ISR (`rk3128_ebc_isr`) sets the three clear bits 6, 7, 8 of `INT` (0x3C), masks the done source (bit 4), calls the
+  callback when status bit 1 is set, unmasks, writes `CONFIG_DONE`: the RK3026 layout (status 2:0, mask 5:3, clear 8:6).
+- The panel is the same: `eink-timings` in the DTB says `ED060KD1`, 1448×1072, SDCLK 40 MHz, `hsync_len` 17, margins 8/55/4/4,
+  `vsync_len` 2, `gdck_sta` 100, `lgonl` 281, the constants of [`registers.md` §3](registers.md). The same `dclk_ebc` is
+  set to 4 × SDCLK.
+- Mainline already knows the RK3128 EBC clocks and bus QoS but no controller node: `clk-rk3128.c` has `DCLK_EBC` (line 337)
+  and `HCLK_EBC` (473); `rk3128.dtsi` lists both in a power domain (lines 218–235) and has `qos_ebc: qos@1012f080` (365),
+  the same address as the `cpu_axi_bus/qos/ebc` node in the ONYX DTB. RK3036 has no EBC at all (no mention in the mainline
+  clock driver or dtsi).
+
+**Differences from the RK3026 driver** (all in the layer above the registers, or in what is not written):
+- **Direct mode only.** One `rk3128_ebc_update(addr)` = `WIN_MST0` := frame, `DSP_START` := 1 (frame count 0), `INT` start
+  pattern, `CONFIG_DONE`. The 4 KB LUT SRAM at +0x1000 is never written (only a debug register dump reads it), `WIN_MST1`
+  never. So the RK3026's LUT modes have no counterpart; every waveform frame is built by the CPU (`onyx_get_waveform_one_frame_*`,
+  8/16-bit and rect/segment variants, NEON helpers), which is what the RK3026 does for its own direct modes 9, 11, 12 and AUTO.
+  Whether the hardware has the LUT SRAM on RK3128 is therefore [VERIFY]; it is simply not used.
+- **`DSP_CTRL` = `0x00030000`** from `ebc_dsp_ctl_set(0,0,0)`: the SDCLK divider 3 as on the RK3026, but swap bits 31:30 = 0 and
+  bit 27 = 0, where the RK3026 direct mode writes `0xC8030000`. The CPU's frame packing may differ, or the bits mean something
+  else on this chip [VERIFY].
+- **`EPD_CTRL` (0x04) is not written** by any function that touches the window (the writer list is complete: the xrefs to the
+  driver pointer are probe, enable/disable, `func_enable`, `set_panle_timing`, `update`, `output_ebc`); the RK3026 writes
+  `0xA98EFF03` at probe. The value either comes from the boot loader's display initialisation (`support_uboot_display` is
+  consulted at probe) or from reset [VERIFY]. A register dump on a RK3128 device would settle it.
+- **`CONFIG_DONE` (0x50) is written with 1**, in every writer (`ebc_panel_scan_set`, `ebc_win_dsp_set`, `ebc_dsp_ctl_set`, `ebc_image_addr_set`, `update`, ISR); the RK3026 writes `0xFFFF`. Probably only bit 0 matters [VERIFY].
+- **Software EPDC (`onyx,sepdc`)**: an i.MX-style update model on top of the direct frames: 128 software LUT slots, update
+  merging (`onyx_epdc_merge_upd`, `epdc_submit_merge`), collision masks per update, per-update **magic** values,
+  region/4-bit/5-bit conversion (`epdc_update_region_cal_*`, `onyx_epdc_wb_convert`), a frame task that builds one frame at a
+  time (`epdc_refresh_waveform_task`) and a semaphore the EBC ISR releases per displayed frame. Its userspace interface is
+  `/dev/ebc` ioctl 0x7000 + n (34 commands in Livingstone, 31 in Darwin 7), driver version string
+  `ONYX_EBC_DRIVER_VERSION_2.00`; not the RK3026's ioctl set (0x7000–0x7004).
+- **Waveform**: the E Ink file is parsed as PVI/WBF or as an i.MX-style converted file (`waveform_file_format`), requested as
+  firmware `waveform.wbf` from `/vendor/waveform/` with the fallback file `/waveform/eink_waveform.wbf`; the RK3026 reads
+  `/ebc_waveform.bin`. The kernel maps its update-mode number to the file's mode index through a table keyed by the WBF type
+  byte, and builds extra Regal ("REGAL") and GLR16/GLD16 variants at load time (`onyx_convert_waveform_data_pvi`).
+- **Temperature**: the same TPS65185 ADC (regulator `TMST`), but the value reaches the update path through a setter
+  (`onyx_epdc_set_temp`), not a read on every update inside the EBC code [VERIFY who calls it].
+- **Panel timings and the PMIC are in the device tree** (`eink-timings`, `tps6518x@68`), where the RK3026 compiles the panel
+  table into the kernel.
+
+**Darwin 7 → Livingstone (5 months).** The register layer is byte-identical apart from one argument position of
+`rk3128_ebc_update`. Darwin 7 is a framebuffer-style driver: `fb_ops` with `ioctl`/`write`, `dpy_update`, a work-queue per
+update (`onyx_epdc_submit_work_func`, `update_wb_work_func`), per-pixel LUT collision tests (`onyx_lut_is_collision*`). Livingstone
+replaces that with a message queue (`epdc_msg_*`), a waveform-buffer queue and a producer/consumer split (`epdc_refresh_waveform_task`,
+`onyx_epdc_produce_wf_segment`, `_sg` scatter variants), block and 4/5-bit region calculation, a Regal pass, a splash-memory
+handover, `onyx_epdc_wait_all_update_compelete`, `onyx_epdc_parse_dt` and `waveform_desc` lists, and 3 more ioctls. The panel
+node and the PMIC node in the two DTBs are identical.
+
+**What it means for one mainline driver.** The register block, the interrupt scheme, the window/stride registers, the 40 MHz
+SDCLK/GRF gate and the panel are the same on RK3026 and RK3128, so one controller driver can serve both with one compatible
+string per SoC and the RK3026's [`registers.md`](registers.md) as its register description; the differences are the SoC glue
+(clock names, power domain, `GRF` block) and, at most, the unwritten registers above. The RK3026's LUT engine is optional:
+ONYX's RK3128 driver gets by with direct frames only, as Rockchip's RK3566 vendor driver and Holland's RFC (for partial
+updates) also do, so a first mainline driver can use direct frames only on both chips. What differs is above the controller:
+ONYX adds its own software EPDC and ioctl ABI, which a mainline driver would not follow. The RK3566's register differences
+(§3.2) are still the dividing line between this IP family and its successor.
+
+## 9. Not analysed
 
 IT8951 (E Ink's USB/SPI timing controller), the MediaTek EPD controllers of newer Kobo devices, and Allwinner's EINK
 engine were not read for this page.
 
-## 9. Reproduce
+## 10. Reproduce
 
 ```sh
+# RK3128 (ONYX): decrypt update.upx with the key list above, take the kernel out of boot.img (LZO zImage), then
+# vmlinux-to-elf for the symbols, objdump -d for the functions named in §8, dtc/libfdt for rk-kernel.dtb
 # RK3566 decompile (read only)
 git clone https://github.com/Ralim/ebc-dev-reverse-engineering && git -C ebc-dev-reverse-engineering checkout 1a089fc
 # Rockchip vendor driver: C glue and the generated assembly
