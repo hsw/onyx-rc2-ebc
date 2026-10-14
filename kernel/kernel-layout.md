@@ -78,7 +78,7 @@ The layout script lists clusters of text functions whose names occur in neither 
 
 Loadable modules, outside the Image:
 - source exists: `mali.ko`/`ump.ko` (ARM r3p2), `8723bu.ko` (Realtek), `vpu_service`, `rk29-ipp`;
-- only `rk30xxnand_ko.ko` (NAND FTL, loaded from the boot ramdisk) is closed. Nothing to gain from decompiling it.
+- only `rk30xxnand_ko.ko` (NAND FTL, loaded from the boot ramdisk) is closed, but has been analysed statically: on the RC2 it drives the eMMC (not raw NAND) through the kernel's PL330 `rk29_dma_*` API (channel 14 = `DMACH_EMMC`); see [onyx-rc2-hardware](https://github.com/hsw/onyx-rc2-hardware) `device/README.md` and `soc/README.md` §1.1.
 
 ## 5. How to decompile a piece when needed
 
