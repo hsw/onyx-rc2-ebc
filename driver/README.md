@@ -81,7 +81,7 @@ The LUT/PVI rewrite, `parse_mode_version` and the C AUTO engine look like a late
   - The public `.uu` accepted 0–12, so **EPD_TEXT (7) is newly rejected**.
   - This corrects `abi/ebc-abi.md`'s "7 → type 2" (`§7`).
 - **The LUT-mode window start address uses a hard-coded stride of 1024 px** (`ebc_image_addr_set`, `(x1 + y1·1024)/2`). Width 1448 needs `y1·1448`.
-  - The arithmetic is [CONFIRMED-dis]. The effect, **a LUT-mode update with a sub-window and `y1 ≠ 0` fetches the wrong rows**, is [STRONG]: it assumes the EBC fetches from MST0/1 with no other offset, `§9` item 1. The same code is in the `.uu`.
+  - The arithmetic is [CONFIRMED-dis]. The effect, **a LUT-mode update with a sub-window and `y1 ≠ 0` fetches the wrong rows**, was [STRONG] and is now [CONFIRMED-device]: a window at y1 > 0 shows rows from `(x1 + 1024·y1)/2` on the panel ([`registers.md`](registers.md) §3.8). The same code is in the `.uu`.
   - The stock gralloc can send mode 1 with an A2-exit window when auto-full fires. A client must send LUT modes with `y1 = 0` (normally the full screen).
 - **PART (3), OED_PART (10) and DIRECT_PART (11) frames with no changed pixel are dropped in the kernel, before power-up.** Frames whose changed pixels are all
   pure black/white are silently promoted to **DU** [CONFIRMED-log: 79 DU LUT builds with no mode 6 ever sent].
@@ -197,7 +197,8 @@ gralloc ioctl 0x7001 ─► dsp list ─► ebc_thread ─► per-mode pre-proce
   - vsync 2, vstart 4, vend 4;
   - frame_rate 85, pixclock 40 MHz, `rotate` 270, gdck_sta 100, lgonl 281.
 
-  At 4 px per clock that is (362+80)·1082/40 MHz = **11.96 ms per frame (83.6 Hz)** [STRONG]. So:
+  At 4 px per clock that is (362+80)·1082/40 MHz = **11.96 ms per frame (83.6 Hz)** [CONFIRMED-device: measured with the
+  mainline driver, 38 frames in 454 ms, 64 in 765 ms]. So:
   - GC16 at range 8 (38 frames) takes 0.454 s;
   - device back-to-back PART updates are 0.47 s apart [CONFIRMED-log: device dmesg, 10.03→13.34 s];
   - the ~15 ms gap is the I²C temperature read plus `decodewaveform_19` plus the LUT build ("eink mode" → "lut_temp" = 15.5 ms on the device).
@@ -988,7 +989,9 @@ statements below win.
 ## 9. Still [VERIFY]
 
 1. DSP_CTRL bits 27/28/29 and INT bits: names come from rychly `ebc.h`; the meanings are inferred (A/B on the device as in `../reagl`).
+   2026-11: a mainline driver that sets them this way draws correctly; what is still open is listed in [`registers.md`](registers.md) §7.
 2. Real CPU time of a mode-9/11/12 or AUTO frame (does it keep up with 11.96 ms?), and the length of the pause between 64-frame LUT chunks.
+   2026-11: the 11.96 ms frame is measured on the device; the pause between chunks is still unmeasured.
 3. Whether the 1024-stride window bug is reachable in the stock 4.2 stack: needs auto-full to fire at an A2 exit. Visual check: a corrupted band after an A2 session.
 4. UPSEQ 0x39/0x11 versus the ED060KD1 spec; the USB vendor command encoding for VCOM.
 5. Who loads the loader copy at 0x7ff00000 (it is overwritten anyway).

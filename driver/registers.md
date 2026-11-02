@@ -21,6 +21,10 @@ Sources:
 - **DS**: `RK302X_datasheet_V1.2` (feature list only).
 - **Device**: a read-only dump of 0x00–0x50 on the running RC2 (2026-10-11), display idle after a partial update, plus
   `/proc/iomem`, `/proc/interrupts`, panel tests.
+- **Mainline** (added 2026-11-02): our DRM driver `drivers/gpu/drm/rockchip/rk3026_ebc*.c` in
+  [github.com/hsw/linux](https://github.com/hsw/linux) (branch `rc2/main`), written from this page, and the test rounds run with it on the
+  RC2 between 2026-10-17 and 2026-11-02. A fact marked [CONFIRMED-device] there was measured on the RC2 with that driver;
+  [CONFIRMED-src] there means the driver does it that way and the RC2 draws correctly with it.
 
 Marks: [CONFIRMED-dis] read in the stock listing (address given); [CONFIRMED-emu] stock function run in Unicorn; [CONFIRMED-device]
 seen on the RC2; [CONFIRMED-src] written in a public source; [STRONG] inferred from several facts; [VERIFY] / [GUESS] open.
@@ -38,7 +42,10 @@ seen on the RC2; [CONFIRMED-src] written in a public source; [STRONG] inferred f
   words = 4 KB at +0x1000..+0x1FFF; longer waveforms go in 64-frame chunks reloaded from the interrupt. The datasheet's
   "128 frames, 8 KB" is unconfirmed (§4).
 - **On the device every predicted value read back as predicted**, except `WIN_VIR` bits 31:16 (read 0).
-- **Outside the window:** the EBC data lines reach the panel only when **`GRF_LVDS_CON0` bit 0** is set (§5).
+- **Outside the window:** the EBC data lines reach the panel only when **`GRF_LVDS_CON0` bit 0** is set, together with bits 8
+  and 9 (§5).
+- **`WIN_MST0/1` read back the pair of the scan that is running**, and a written pair shows up there at the start, not at
+  `CONFIG_DONE` (§3.9). Whether the controller also fetches from that pair from the first frame is the one open half [VERIFY].
 
 ## 2. The window 0x10114000–0x10117FFF
 
@@ -173,6 +180,8 @@ In `DSP_START`, `DSP_CTRL`, `EPD_CTRL` and `INT` the masks and constructors agre
 - `CONFIG_DONE` = `0xFFFF` after **every** group of writes: timings, window, `DSP_CTRL`, addresses, start, end of the handler
   [CONFIRMED-dis]. RK3566 writes 1. The values seem to take effect only after this write [STRONG]. A new driver should write
   `0xFFFF` as stock does; it reads back 0.
+- Exception measured with the mainline driver: a `WIN_MST0/1` write followed by `CONFIG_DONE` does **not** change the readback
+  while the controller is idle; the start does (§3.9) [CONFIRMED-device].
 
 ### 3.7 Write order of stock
 
@@ -206,6 +215,52 @@ In `DSP_START`, `DSP_CTRL`, `EPD_CTRL` and `INT` the masks and constructors agre
 - LUT window: `WIN_ACT = WIN_DSP = (x2−x1) | (y2−y1)<<16`, `WIN_DSP_ST` moves by x1/4 and y1; x1 must be a multiple of 4
   (0xc060d0c8–0xc060d130). The vertical base is hard-coded as `vsync + 4` instead of `vsync + vstart` (equal on the RC2).
 
+### 3.9 WIN_MST0/1: when a written pair takes effect (the LUT direction)
+
+In LUT mode the controller looks up every pixel as `LUT[frame][old][new]`, with `old` fetched through `WIN_MST0` and `new`
+through `WIN_MST1` (§3.8). The pair therefore sets the **direction** of the lookup: swap the two addresses and the same waveform
+drives every pixel from the new level back to the old one. A driver that wants to stop copying images (swap the roles of its two
+buffers after each update instead) has to know which pair a scan uses and which buffer it may write while a scan runs. Stock
+does not answer this: it writes the pair once per update, before the start, and reads only `WIN_MST0`, in the direct-mode
+ping-pong (§3.7), where it uses the read to find the buffer the controller is on.
+
+Measured with the mainline driver on the RC2 (2026-11-01 and 2026-11-02). A debug-only knob writes the transposed pair
+(`WIN_MST0` = the new image, `WIN_MST1` = the old one) before an update; the driver reads both registers back at fixed points.
+The mainline start sequence after the address writes is: LUT chunk, window registers, `INT`, `DSP_CTRL`, `DSP_START` with the
+frame count, `CONFIG_DONE`, then `DSP_START` with bit 0 = 1.
+Two rounds; the second with 3 repetitions of each case: one LUT chunk (38 frames) and two chunks (the 113-frame RESET waveform,
+64 + 49):
+
+| Point | `WIN_MST0` / `WIN_MST1` read back |
+|---|---|
+| right after the address writes and their `CONFIG_DONE`, before the start sequence | **the previous pair** |
+| first sample after the start sequence (+0 µs), +20 µs, +200 µs, +30 ms, mid-chunk, end of chunk 0 | the new pair |
+| start and end of chunk 1 (two-chunk case) | the new pair, unchanged between chunks |
+| after the update, until the next start | the new pair |
+
+Switching the knob back mirrors it: the readback keeps the transposed pair until the next start and shows the normal pair from
+its first sample on. No sample ever showed the new pair before the start or only one scan late [CONFIRMED-device].
+
+What follows:
+- **The readback is the active pair, not the last written value.** `CONFIG_DONE` alone does not move it while idle; the start
+  sequence does. The registers are double-buffered and latch there [CONFIRMED-device for the readback]. The rounds did not
+  sample between the frame-count write and the bit-0 write, so the exact write that latches is not separated; the start bit is
+  the natural candidate [STRONG].
+- **The simplest reading is "latch at the start"**: the pair written before a start drives that scan, and during a scan the
+  readback names the two buffers being fetched. Stock's direct mode depends on exactly this [STRONG].
+- **Not proven:** that the fetch follows the readback. The readback could be a shadow that changes at the start while the fetch
+  still uses the old pair for one more scan. The panel decides it, and it was not observed (no camera in those rounds) [VERIFY].
+  A transposed scan runs every transition backwards, so the glass drifts toward white: start from a white panel, set the
+  transposed pair and draw black. "Latch at the start" leaves the panel light; a one-scan-late latch turns it dark.
+- **For a driver now:** write both addresses before the start, never write the buffer that either register reads back while a
+  scan runs, and keep fixed old/new roles (copy images) until the panel check is done. With the panel check passed, rotating
+  the two buffers needs no extra wait: the pair written before a start is the pair of that scan.
+- After a stuck scan is cut with a block reset (§6), the next update writes and starts as usual and draws correctly
+  [CONFIRMED-device].
+- Mainline never clears `DSP_START` bit 0 between scans (only when it stops the controller), so every start after the first is a
+  write of bit 0 = 1 over a register that already holds 1, and every one of them starts a scan [CONFIRMED-src]. A 0→1 edge in the
+  written value is not needed.
+
 ## 4. Frame count and LUT size: 64 or 128
 
 | Argument | For 64 frames / 4 KB | For 128 / 8 KB |
@@ -229,46 +284,86 @@ way. A safe check is a module that writes and reads back +0x2000 with the panel 
   (datasheet V1.2, pins 47–56; `LCDC_D0..D9`) and are not in the iomux at all. Stock sets bit 0 (masked write) at init and at
   every panel power-up, and writes `0xFFFF0300` at power-down (bit 0 = 0, bit 8 LVDS PLL off, bit 9 LVTTL). At idle the register
   reads `0x0300` [CONFIRMED-device]. A new driver needs a `rockchip,grf` phandle for this; without it nothing reaches the panel.
+  **Bits 8 and 9 matter too:** with the register at `0x101` nothing draws, and `0x301` (nothing else changed) brings the image up.
+  Something before the kernel leaves them set on some boots, which made them look inert. Write all three (`0x301` with the mask)
+  [CONFIRMED-src, mainline].
 - **Clocks:** `dclk_ebc` = CLKSEL23 div 3 from CPLL, **160 MHz**; the EBC probe retunes CPLL to 640 MHz once and it stays there
   [CONFIRMED-device]. `hclk_ebc`; stock also enables `aclk_lcdc1` and the `pd_lcdc1` domain; whether the EBC needs them is
   [VERIFY]. Stock enables all of them on every update and never disables them (use count = updates + 1 on the device), so whether
   they can be gated between updates is untested [VERIFY].
+- **Mainline clocks** [CONFIRMED-src]: `hclk_ebc`, `dclk_ebc`, `aclk_lcdc1` (the video NIU) **and `ACLK_EBC`, the block's own AXI
+  master port**. Without `ACLK_EBC` the timing generator still runs from `dclk_ebc`: frames complete and the DISPLAYEND interrupt
+  arrives on time, but no pixel data is fetched, so a scan reports success and the panel does not change [STRONG]. Mainline has
+  no driver for `pd_lcdc1` and never touches it, and the EBC works, so a driver does not need a power-domain step for it.
+  `dclk_ebc` on the RC2 is 160 MHz from CPLL at 640 MHz. `CLKSEL_CON23` is not a hiword-masked register (see
+  [onyx-rc2-hardware](https://github.com/hsw/onyx-rc2-hardware) `soc/README.md`).
+- **Gating across system suspend works** [CONFIRMED-device]: the mainline driver turns off the panel rails, the interrupt and all
+  four clocks at suspend, and on resume turns them on and writes every register again. 10 RTC-wake s2idle cycles and 10
+  `pm_test` cycles: every page turn after resume drew, and an update in flight at suspend was waited for, not cut. Gating
+  between updates while running is still untested.
 - **Pins at idle:** SDCLK/SDLE/GDCLK/GDOE/GDSP (GPIO2_B0/B1/B3/C1/C2) parked as GPIO low, VCOM (GPIO2_C0) GPIO high, GDPWR1/2
   (GPIO2_D0/D1) stay in the EBC function [CONFIRMED-device]. SDOE, SDCE2–5 and GDPWR0 are used as GPIOs on the RC2.
 - **Interrupt:** Linux IRQ 81 = `GIC_SPI 49`. Stock requests it without a trigger type (`IRQF_DISABLED` only, 0xc060d480); the
-  default level is to be checked [VERIFY].
+  default level is to be checked [VERIFY]. Mainline uses `IRQ_TYPE_LEVEL_HIGH`: one interrupt per chunk in every test
+  round [CONFIRMED-src]; edge was not tried.
 - SoC-side details (CRU fields, GRF, pins): [onyx-rc2-hardware](https://github.com/hsw/onyx-rc2-hardware) `soc/README.md`.
 
 ## 6. For a new driver
 
 - **Start from the values proven on this panel**, bit for bit: `EPD_CTRL 0xA98EFF03`, the timings of §3, `WIN_CTRL 0x00020FC0`,
   `WIN_VIR` = buffer size, `DSP_CTRL 0xC0030000` + mode bits, `VCOM0–3 = 0`, `CONFIG_DONE 0xFFFF` after each group,
-  `GRF_LVDS_CON0` bit 0 = 1. Do not "fix" the unclear fields (`EPD_CTRL` 15:8 and 31:27, `DSP_CTRL` 27) without an A/B test on
+  `GRF_LVDS_CON0` = `0x301` (bits 0, 8, 9; §5). Do not "fix" the unclear fields (`EPD_CTRL` 15:8 and 31:27, `DSP_CTRL` 27) without an A/B test on
   the panel.
 - **Bit definitions from this page**, not from the header and not from RK3566: `WIN_CTRL` by the masks; `INT` status bit 1,
   clear bit 7, mask bit 4, `0x28` at start; `DSP_START` with a 6-bit count in 7:2.
 - **LUT engine:** at most 64 frames × 16 words at +0x1000; longer waveforms in chunks from the DISPLAYEND interrupt, `DSP_CTRL`
   bit 27 = 1 for intermediate chunks, 0 for the last.
 - **Addresses:** `WIN_MST0` = old, `WIN_MST1` = new, window offset `(x1 + y1·vir_width)/2` (not 1024), x1 a multiple of 4,
-  `WIN_DSP_ST` = base + x1/4, y1, with vertical base `vsync + vstart`.
+  `WIN_DSP_ST` = base + x1/4, y1, with vertical base `vsync + vstart`. Write both addresses before the start and do not write
+  the buffers the registers read back while a scan runs (§3.9). Mainline programs `WIN_VIR` with the width alone (high half 0)
+  and the line step is right [CONFIRMED-src].
+- **A stuck scan** (no DISPLAYEND within the waveform time plus a margin): mask the interrupt, pulse the block's two resets
+  (`SRST_EBC_AXI`, `SRST_EBC_AHB`: `CRU_SOFTRST_CON7` bits 11 and 12) and write every register again. The reset stops the
+  scan and drops a pending interrupt; it is taken to clear the LUT SRAM too, so the next start loads its chunk again. No register
+  is known to stop a running scan. Mainline does this on a
+  chunk timeout; the next scans run normally and a full RESET waveform restores the panel [CONFIRMED-device]. `INT` has no
+  under-run or error status, so a fetch that starves under memory load still reports a clean scan (see
+  [onyx-rc2-hardware](https://github.com/hsw/onyx-rc2-hardware) `memory/`) [STRONG].
+- **Frame time** on the RC2 timings: 11.96 ms per frame for every waveform, measured (38 frames 454 ms, 64 frames 765 ms, 49
+  frames 586 ms) [CONFIRMED-device].
 - **Direct mode** (partial updates without the LUT): bit 28 = 0, `WIN_MST0` = 2-bit frame (w·h/4), `WIN_FMT` unchanged, one frame
   per start, two buffers in turn.
 - **Read the hardware as little as stock does** (`INT` and, in direct mode, `WIN_MST0`); keep the rest in a cached regmap. Reads of
   other registers are untested.
-- **Device tree:** `reg = <0x10114000 0x4000>`, `interrupts = <GIC_SPI 49 …>`, clocks `dclk_ebc` (160 MHz) and `hclk_ebc`
-  (+ possibly `aclk_lcdc1`/`pd_lcdc1`), `rockchip,grf`, pinctrl `default`/`sleep` for the eight GPIO2 pins.
+- **Device tree:** `reg = <0x10114000 0x4000>`, `interrupts = <GIC_SPI 49 IRQ_TYPE_LEVEL_HIGH>`, clocks `hclk_ebc`, `dclk_ebc`
+  (160 MHz), `aclk_lcdc1` and `ACLK_EBC` (§5; no `pd_lcdc1` step), resets `SRST_EBC_AXI`/`SRST_EBC_AHB`, `rockchip,grf`, pinctrl
+  `default`/`sleep` for the eight GPIO2 pins. The mainline binding is in the kernel tree above.
 - **Do not touch** +0x54..+0xFFF and +0x2000..+0x3FFF until checked.
 - **Waveform and temperature:** load with `request_firmware()` and check sizes and offsets (stock checks nothing); temperature
   range: ≥ 43 °C → the last range, below 0 °C → the first, without the stock bugs.
 
 ## 7. Still [VERIFY]
 
-1. `DSP_CTRL` bit 27: what changes on the panel if the last chunk keeps 1 or an intermediate chunk has 0.
-2. `DSP_CTRL` bit 29: A/B of PART against a full LUT update on dark unchanged text.
-3. `EPD_CTRL` bits 15:8 and 31:27; whether RK3026 has `SDCE_WIDTH`/`OUT_LOW` in `DSP_START`.
-4. The width of the `INT` frame-number field (bits 9+); whether clearing bits 6/8 is needed at all.
-5. LUT 64 or 128 frames, memory at +0x2000 (§4).
+State 2026-11-02, after the mainline rounds (§ Sources):
+
+1. `DSP_CTRL` bit 27: what changes on the panel if the last chunk keeps 1 or an intermediate chunk has 0. *Narrowed:* mainline
+   sets it as stock does (1 = more chunks follow) and the two-chunk RESET draws correctly; no A/B with a wrong value was run.
+2. `DSP_CTRL` bit 29: A/B of PART against a full LUT update on dark unchanged text. *Narrowed:* mainline drives PART (bits 29 +
+   28) and FULL (bit 28) and both draw; the dark-text A/B was not run.
+3. `EPD_CTRL` bits 15:8 and 31:27; whether RK3026 has `SDCE_WIDTH`/`OUT_LOW` in `DSP_START`. *Narrowed:* bits 15:8 =
+   min(width/4, 255) (0xFF on the 1448-wide panel, as stock) and bits 31:27 as stock work; whether 15:8 holds a count or a
+   count minus 1 (only the saturated value was compared), and the `DSP_START` fields, are open.
+4. The width of the `INT` frame-number field (bits 9+); whether clearing bits 6/8 is needed at all. *Narrowed:* written with 38,
+   49 and 64 (64 reaches bit 15), one interrupt per chunk each time, so bits 15:9 are enough; clearing 6/8 is still done and not
+   tested without.
+5. LUT 64 or 128 frames, memory at +0x2000 (§4). *Open:* mainline uses 64-frame chunks at +0x1000 only.
 6. Whether a start fires on a write of bit 0 = 1 without a 0→1 edge, and whether a write of `DSP_START` before `CONFIG_DONE`
-   already starts a frame.
-7. Whether the EBC needs `aclk_lcdc1`/`pd_lcdc1`; gating between updates; the IRQ trigger type.
-8. `WIN_VIR` bits 31:16 (read 0 where 1072 was expected).
+   already starts a frame. *First half settled:* it fires (§3.9). Second half open: which of the frame-count write, its
+   `CONFIG_DONE` and the bit-0 write starts the scan was not separated.
+7. Whether the EBC needs `aclk_lcdc1`/`pd_lcdc1`; gating between updates; the IRQ trigger type. *Mostly settled:* `ACLK_EBC` is
+   the fetch clock and needed; `pd_lcdc1` needs no driver step; gating works across system suspend; level-high works (§5).
+   Gating between updates and a run without `aclk_lcdc1` are open.
+8. `WIN_VIR` bits 31:16 (read 0 where 1072 was expected). *Settled for use:* not needed; the width alone gives the right line
+   step.
+9. *New:* whether the controller fetches from the `WIN_MST0/1` pair from the scan it was written before, as the readback says,
+   or one scan later (§3.9): a panel check with a camera.
