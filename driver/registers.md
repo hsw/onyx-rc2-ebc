@@ -45,7 +45,7 @@ seen on the RC2; [CONFIRMED-src] written in a public source; [STRONG] inferred f
 - **Outside the window:** the EBC data lines reach the panel only when **`GRF_LVDS_CON0` bit 0** is set, together with bits 8
   and 9 (§5).
 - **`WIN_MST0/1` read back the pair of the scan that is running**, and a written pair shows up there at the start, not at
-  `CONFIG_DONE` (§3.9). Whether the controller also fetches from that pair from the first frame is the one open half [VERIFY].
+  `CONFIG_DONE` (§3.9). The fetch switches there too: the pair written before a start drives that scan, seen on the glass.
 
 ## 2. The window 0x10114000–0x10117FFF
 
@@ -264,12 +264,14 @@ What follows:
 
   Every step agrees with "latch at the start", none with "one scan late". The two-chunk and cut-scan cases could not be read on
   the glass (their black baseline did not come out dark), so for them only the register readback stands (constant across
-  chunks, back to normal after the block reset).
+  chunks; after the block reset see below).
 - **For a driver:** write both addresses before the start and never write a buffer that either register reads back while a
   scan runs. Rotating the two image buffers (swapping old/new roles after each update instead of copying) needs no extra wait:
   the pair written before a start is the pair of that scan.
 - After a stuck scan is cut with a block reset (§6), the next update writes and starts as usual and draws correctly
-  [CONFIRMED-device].
+  [CONFIRMED-device]. The reset clears the pair: `WIN_MST0/1` read back `0`/`0` after it, still `0`/`0` after the next
+  update's address writes and `CONFIG_DONE`, and the written pair from the first sample after its start on (3 repetitions)
+  [STRONG]. So `CONFIG_DONE` does not move the readback even from the reset value; only the start does.
 - Mainline never clears `DSP_START` bit 0 between scans (only when it stops the controller), so every start after the first is a
   write of bit 0 = 1 over a register that already holds 1, and every one of them starts a scan [CONFIRMED-src]. A 0→1 edge in the
   written value is not needed.
