@@ -248,13 +248,26 @@ What follows:
   the natural candidate [STRONG].
 - **The simplest reading is "latch at the start"**: the pair written before a start drives that scan, and during a scan the
   readback names the two buffers being fetched. Stock's direct mode depends on exactly this [STRONG].
-- **Not proven:** that the fetch follows the readback. The readback could be a shadow that changes at the start while the fetch
-  still uses the old pair for one more scan. The panel decides it, and it was not observed (no camera in those rounds) [VERIFY].
-  A transposed scan runs every transition backwards, so the glass drifts toward white: start from a white panel, set the
-  transposed pair and draw black. "Latch at the start" leaves the panel light; a one-scan-late latch turns it dark.
-- **For a driver now:** write both addresses before the start, never write the buffer that either register reads back while a
-  scan runs, and keep fixed old/new roles (copy images) until the panel check is done. With the panel check passed, rotating
-  the two buffers needs no extra wait: the pair written before a start is the pair of that scan.
+- **The fetch follows the readback: checked on the glass (2026-11-04)** [CONFIRMED-device]. The readback alone could have been
+  a shadow that changes at the start while the fetch still uses the old pair for one more scan. A transposed scan runs every
+  transition backwards, so the test starts from a white panel, sets the transposed pair and draws black: "latch at the start"
+  leaves the panel light, a one-scan-late latch turns it dark. Filmed with a webcam, two repetitions, median panel luma over
+  the last 1.5 s of each step (0-255, white about 125, black about 22):
+
+  | Step | Fill, pair | Luma (rep 1 / rep 2) | Reads as |
+  |---|---|---|---|
+  | baseline | white / black, normal pair | 127/120, 24/21 | — |
+  | S1 | black, transposed | **129/122** | white: the transposed pair drove this scan |
+  | S2 | white, transposed | 24/21 | black (the mirror of S1) |
+  | S3 | black, normal | **22/20** | black: the normal pair is back from the next start |
+  | S4 | white, normal | 126/120 | white |
+
+  Every step agrees with "latch at the start", none with "one scan late". The two-chunk and cut-scan cases could not be read on
+  the glass (their black baseline did not come out dark), so for them only the register readback stands (constant across
+  chunks, back to normal after the block reset).
+- **For a driver:** write both addresses before the start and never write a buffer that either register reads back while a
+  scan runs. Rotating the two image buffers (swapping old/new roles after each update instead of copying) needs no extra wait:
+  the pair written before a start is the pair of that scan.
 - After a stuck scan is cut with a block reset (§6), the next update writes and starts as usual and draws correctly
   [CONFIRMED-device].
 - Mainline never clears `DSP_START` bit 0 between scans (only when it stops the controller), so every start after the first is a
@@ -365,5 +378,5 @@ State 2026-11-02, after the mainline rounds (§ Sources):
    Gating between updates and a run without `aclk_lcdc1` are open.
 8. `WIN_VIR` bits 31:16 (read 0 where 1072 was expected). *Settled for use:* not needed; the width alone gives the right line
    step.
-9. *New:* whether the controller fetches from the `WIN_MST0/1` pair from the scan it was written before, as the readback says,
-   or one scan later (§3.9): a panel check with a camera.
+9. Whether the controller fetches from the `WIN_MST0/1` pair from the scan it was written before or one scan later. *Settled*
+   (§3.9): from the scan it was written before, seen on the glass.

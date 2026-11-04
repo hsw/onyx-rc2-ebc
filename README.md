@@ -67,8 +67,8 @@ All of these are explained, with addresses and confidence marks, in [`driver/REA
 - **Since 2026-11: checked with a working mainline driver.** A DRM driver written from this description runs the RC2's panel
   ([github.com/hsw/linux](https://github.com/hsw/linux), `drivers/gpu/drm/rockchip/rk3026_ebc*.c`). What its test rounds settled is in
   [`driver/registers.md`](driver/registers.md): `WIN_MST0/1` (the old/new pair, i.e. the direction of the LUT lookup) are
-  double-buffered and read back the pair of the running scan, switching at the start, not at `CONFIG_DONE` (§3.9; whether the
-  fetch also switches there is the last open half); `GRF_LVDS_CON0` needs bits 8 and 9 besides bit 0; `ACLK_EBC` is the fetch
+  double-buffered and read back the pair of the running scan, switching at the start, not at `CONFIG_DONE`, and the fetch
+  switches there too, as a webcam test of the glass showed (§3.9); `GRF_LVDS_CON0` needs bits 8 and 9 besides bit 0; `ACLK_EBC` is the fetch
   clock; a stuck scan is recovered with the block reset; clock gating across suspend works (§5–§7).
 
 - **The RK3128 has the same EBC.** ONYX's RK3128 readers (kernel 3.10) program registers 0x00–0x50 with the same formulas and
